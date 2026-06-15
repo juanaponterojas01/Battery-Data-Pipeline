@@ -84,7 +84,7 @@ The `scripts/local_simulator.py` script lets you run the full pipeline locally w
 
 ```bash
 python scripts/local_simulator.py \
-  --csv data/03-27-17_09.06_10degC_UDDS_Pan18650PF.csv \
+  --csv data/10degC_UDDS_Pan18650PF.csv \
   --meta data/test.meta.json \
   --output-dir ./local_output
 ```
@@ -166,6 +166,16 @@ aws s3 cp my_test.meta.json s3://battery-raw/raw/my_test.meta.json
 2. The orchestrator Lambda starts the Step Functions execution
 3. Each stage (Validation → Processing → SOC → Metadata) runs in sequence
 4. Monitor execution in the [Step Functions console](https://console.aws.amazon.com/states/)
+
+### Observability with AWS X-Ray
+
+X-Ray tracing is enabled on all Lambda functions and the Step Functions state machine. After an execution completes, you can view the end-to-end trace in the [AWS X-Ray console](https://console.aws.amazon.com/xray/home):
+
+- **Service Map** — Visual graph of the entire pipeline flow: S3 → EventBridge → Orchestrator → Step Functions → Validation → Processing → SOC → Metadata → S3
+- **Trace Timeline** — Waterfall view showing latency for each stage, including cold starts and data transfer between steps
+- **Filtering** — Search traces by drive cycle, cell ID, or time range to diagnose specific executions
+
+This makes it easy to identify bottlenecks, compare execution durations across drive cycles, and debug failures visually.
 
 ### Outputs
 

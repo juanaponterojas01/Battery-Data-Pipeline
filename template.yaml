@@ -182,6 +182,8 @@ Resources:
         ProcessFunctionArn: !GetAtt ProcessFunction.Arn
         SOCFunctionArn: !GetAtt SOCFunction.Arn
         MetadataFunctionArn: !GetAtt MetadataFunction.Arn
+      Tracing:
+        Enabled: true
       Policies:
         - Version: '2012-10-17'
           Statement:
