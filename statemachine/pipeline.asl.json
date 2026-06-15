@@ -1,0 +1,30 @@
+{
+    "Comment": "EV Battery Data Pipeline: validates incoming data, processes it, estimates state of charge (SOC), and writes metadata.",
+    "StartAt": "ValidateData",
+    "States": {
+        "ValidateData": {
+            "Type": "Task",
+            "Resource": "${ValidateFunctionArn}",
+            "ResultPath": "$",
+            "Next": "ProcessData"
+        },
+        "ProcessData": {
+            "Type": "Task",
+            "Resource": "${ProcessFunctionArn}",
+            "ResultPath": "$",
+            "Next": "EstimateSOC"
+        },
+        "EstimateSOC": {
+            "Type": "Task",
+            "Resource": "${SOCFunctionArn}",
+            "ResultPath": "$",
+            "Next": "WriteMetadata"
+        },
+        "WriteMetadata": {
+            "Type": "Task",
+            "Resource": "${MetadataFunctionArn}",
+            "ResultPath": "$",
+            "End": true
+        }
+    }
+}

@@ -1,0 +1,238 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  EV Battery Data Pipeline
+
+  Serverless infrastructure for ingesting, validating, processing, and enriching
+  EV battery telemetry data from raw CSV uploads through a Step Functions workflow.
+
+Globals:
+  Function:
+    Tracing: Active
+    LoggingConfig:
+      LogFormat: JSON
+    Architectures:
+      - x86_64
+  Api:
+    TracingEnabled: true
+
+Resources:
+  # ---------------------------------------------------------------------------
+  # S3 Buckets
+  # ---------------------------------------------------------------------------
+
+  BatteryRawBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      VersioningConfiguration:
+        Status: Enabled
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  BatteryProcessedBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      VersioningConfiguration:
+        Status: Enabled
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  # ---------------------------------------------------------------------------
+  # Lambda Functions
+  # ---------------------------------------------------------------------------
+
+  OrchestratorFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/orchestrator/
+      Handler: app.lambda_handler
+      Runtime: python3.12
+      MemorySize: 512
+      Timeout: 60
+      AutoPublishAlias: live
+      Environment:
+        Variables:
+          STATE_MACHINE_ARN: !Ref PipelineStateMachine
+      Policies:
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action:
+                - s3:GetObject
+                - s3:PutObject
+              Resource:
+                - !Sub "arn:aws:s3:::${BatteryRawBucket}/*"
+                - !Sub "arn:aws:s3:::${BatteryProcessedBucket}/*"
+            - Effect: Allow
+              Action:
+                - states:StartExecution
+              Resource:
+                - !Ref PipelineStateMachine
+
+  ValidateFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/validation/
+      Handler: app.lambda_handler
+      Runtime: python3.12
+      MemorySize: 2048
+      Timeout: 600
+      AutoPublishAlias: live
+      Policies:
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action:
+                - s3:GetObject
+                - s3:PutObject
+              Resource:
+                - !Sub "arn:aws:s3:::${BatteryRawBucket}/*"
+                - !Sub "arn:aws:s3:::${BatteryProcessedBucket}/*"
+
+  ProcessFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/processing/
+      Handler: app.lambda_handler
+      Runtime: python3.12
+      MemorySize: 2048
+      Timeout: 600
+      AutoPublishAlias: live
+      Policies:
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action:
+                - s3:GetObject
+                - s3:PutObject
+              Resource:
+                - !Sub "arn:aws:s3:::${BatteryRawBucket}/*"
+                - !Sub "arn:aws:s3:::${BatteryProcessedBucket}/*"
+
+  SOCFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/soc_estimation/
+      Handler: app.lambda_handler
+      Runtime: python3.12
+      MemorySize: 2048
+      Timeout: 600
+      AutoPublishAlias: live
+      Policies:
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action:
+                - s3:GetObject
+                - s3:PutObject
+              Resource:
+                - !Sub "arn:aws:s3:::${BatteryRawBucket}/*"
+                - !Sub "arn:aws:s3:::${BatteryProcessedBucket}/*"
+
+  MetadataFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/metadata/
+      Handler: app.lambda_handler
+      Runtime: python3.12
+      MemorySize: 2048
+      Timeout: 600
+      AutoPublishAlias: live
+      Environment:
+        Variables:
+          DEST_BUCKET: !Ref BatteryProcessedBucket
+      Policies:
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action:
+                - s3:GetObject
+                - s3:PutObject
+              Resource:
+                - !Sub "arn:aws:s3:::${BatteryRawBucket}/*"
+                - !Sub "arn:aws:s3:::${BatteryProcessedBucket}/*"
+
+  # ---------------------------------------------------------------------------
+  # Step Functions State Machine
+  # ---------------------------------------------------------------------------
+
+  PipelineStateMachine:
+    Type: AWS::Serverless::StateMachine
+    Properties:
+      DefinitionUri: statemachine/pipeline.asl.json
+      DefinitionSubstitutions:
+        ValidateFunctionArn: !GetAtt ValidateFunction.Arn
+        ProcessFunctionArn: !GetAtt ProcessFunction.Arn
+        SOCFunctionArn: !GetAtt SOCFunction.Arn
+        MetadataFunctionArn: !GetAtt MetadataFunction.Arn
+      Policies:
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action:
+                - lambda:InvokeFunction
+              Resource:
+                - !GetAtt ValidateFunction.Arn
+                - !GetAtt ProcessFunction.Arn
+                - !GetAtt SOCFunction.Arn
+                - !GetAtt MetadataFunction.Arn
+
+  # ---------------------------------------------------------------------------
+  # EventBridge Rule + Lambda Permission
+  # ---------------------------------------------------------------------------
+
+  S3TriggerRule:
+    Type: AWS::Events::Rule
+    Properties:
+      EventBusName: default
+      EventPattern:
+        source:
+          - aws.s3
+        detail-type:
+          - Object Created
+        detail:
+          bucket:
+            name:
+              - !Ref BatteryRawBucket
+      Targets:
+        - Arn: !GetAtt OrchestratorFunction.Arn
+          Id: OrchestratorTarget
+
+  EventBridgeInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref OrchestratorFunction
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt S3TriggerRule.Arn
+
+Outputs:
+  BatteryRawBucketName:
+    Description: S3 bucket for incoming raw CSV and sidecar files
+    Value: !Ref BatteryRawBucket
+
+  BatteryProcessedBucketName:
+    Description: S3 bucket for final processed CSVs and metadata JSON files
+    Value: !Ref BatteryProcessedBucket
+
+  PipelineStateMachineArn:
+    Description: ARN of the battery data pipeline Step Functions state machine
+    Value: !Ref PipelineStateMachine
+
+  OrchestratorFunctionArn:
+    Description: ARN of the orchestrator Lambda function
+    Value: !GetAtt OrchestratorFunction.Arn

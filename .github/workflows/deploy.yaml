@@ -1,0 +1,37 @@
+# GitHub Actions CI/CD workflow for the EV Battery Data Pipeline.
+#
+# Required GitHub repository secrets:
+#   AWS_ACCESS_KEY_ID     - AWS access key for the deployment IAM user
+#   AWS_SECRET_ACCESS_KEY - AWS secret key for the deployment IAM user
+#   AWS_REGION            - AWS region to deploy the stack (e.g. us-east-1)
+
+name: Deploy Battery Data Pipeline
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  build-deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install AWS SAM CLI
+        uses: aws-actions/setup-sam@v2
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Build SAM application
+        run: sam build --use-container
+
+      - name: Deploy SAM application
+        run: sam deploy --no-confirm-changeset --no-fail-on-empty-changeset
