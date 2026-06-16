@@ -1,5 +1,9 @@
 # EV Battery Data Pipeline
 
+<p align="center">
+  <img src=".github/battery_pipeline_architecture_v5.png" alt="EV Battery Data Pipeline Architecture" width="900"/>
+</p>
+
 A serverless AWS pipeline that processes Panasonic 18650PF battery test CSV data through validation, filtering, SOC estimation, and metadata generation — all orchestrated by AWS Step Functions.
 
 When a CSV file and its accompanying `.meta.json` sidecar file are uploaded to an S3 bucket, the pipeline triggers automatically via EventBridge, invokes the orchestrator Lambda, and executes a four-stage Step Functions state machine. The final results (processed data and metadata) are written to a separate output bucket.
