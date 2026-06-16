@@ -221,18 +221,7 @@ def draw_metrics_table(ax: plt.Axes, metadata: dict) -> None:
     ax.set_title("Executive Metrics", fontsize=TITLE_FONT_SIZE, fontweight="bold", pad=10)
 
 
-def add_caption(ax: plt.Axes, text: str) -> None:
-    """Add a descriptive caption below an axes."""
-    ax.annotate(
-        text,
-        xy=(0.5, -0.14),
-        xycoords="axes fraction",
-        ha="center",
-        va="top",
-        fontsize=FONT_SIZE - 2,
-        style="italic",
-        color="dimgray",
-    )
+
 
 
 def generate_report(
@@ -308,7 +297,6 @@ def generate_report(
         ax.set_xlabel("Time (s)", fontsize=FONT_SIZE)
         ax.set_ylabel("Current (A)", fontsize=FONT_SIZE)
         ax.grid(True, alpha=GRID_ALPHA)
-        add_caption(ax, "Shows the 'stress' applied to the battery during the drive cycle.")
 
         # (1,1) — Voltage vs Time
         ax = axes1[1, 1]
@@ -317,9 +305,6 @@ def generate_report(
         ax.set_xlabel("Time (s)", fontsize=FONT_SIZE)
         ax.set_ylabel("Voltage (V)", fontsize=FONT_SIZE)
         ax.grid(True, alpha=GRID_ALPHA)
-        add_caption(
-            ax, "The 'heartbeat' of the battery. Deep drops indicate high internal resistance."
-        )
 
         # (2,0) — Empty spacer
         axes1[2, 0].axis("off")
@@ -334,7 +319,12 @@ def generate_report(
         # ==================================================================
         # PAGE 2: SOC, Temperature, V-vs-SOC, Processing Notes
         # ==================================================================
-        fig2, axes2 = plt.subplots(3, 2, figsize=(A4_WIDTH_IN, A4_HEIGHT_IN), dpi=DPI)
+        fig2 = plt.figure(figsize=(A4_WIDTH_IN, A4_HEIGHT_IN), dpi=DPI)
+        gs = fig2.add_gridspec(
+            3, 2,
+            left=0.08, right=0.95, top=0.90, bottom=0.08,
+            hspace=0.45, wspace=0.35,
+        )
         fig2.suptitle(
             f"Battery Drive Cycle Performance Report (cont.)\n{drive_cycle} ({test_date})",
             fontsize=TITLE_FONT_SIZE + 2,
@@ -343,42 +333,36 @@ def generate_report(
         )
 
         # (0,0) — SOC vs Time
-        ax = axes2[0, 0]
+        ax = fig2.add_subplot(gs[0, 0])
         ax.plot(df["Time"], df["SOC"] * 100, color=color_cycle[2], linewidth=LINE_WIDTH)
         ax.set_title("3. State of Charge Depletion", fontsize=TITLE_FONT_SIZE, fontweight="bold")
         ax.set_xlabel("Time (s)", fontsize=FONT_SIZE)
         ax.set_ylabel("SOC (%)", fontsize=FONT_SIZE)
         ax.grid(True, alpha=GRID_ALPHA)
-        add_caption(ax, "Rate of energy depletion — crucial for BMS algorithm validation.")
 
         # (0,1) — Temperature vs Time
-        ax = axes2[0, 1]
+        ax = fig2.add_subplot(gs[0, 1])
         ax.plot(df["Time"], df["Temperature"], color=color_cycle[3], linewidth=LINE_WIDTH)
         ax.set_title("4. Thermal Response", fontsize=TITLE_FONT_SIZE, fontweight="bold")
         ax.set_xlabel("Time (s)", fontsize=FONT_SIZE)
         ax.set_ylabel("Temperature (°C)", fontsize=FONT_SIZE)
         ax.grid(True, alpha=GRID_ALPHA)
-        add_caption(ax, "Heat generation dictates EV cooling system requirements.")
 
         # (1,0) — Voltage vs SOC
-        ax = axes2[1, 0]
+        ax = fig2.add_subplot(gs[1, 0])
         ax.plot(df["SOC"] * 100, df["Voltage_Filtered"], color=color_cycle[4], linewidth=LINE_WIDTH)
         ax.set_title("5. Characteristic Curve", fontsize=TITLE_FONT_SIZE, fontweight="bold")
         ax.set_xlabel("SOC (%)", fontsize=FONT_SIZE)
         ax.set_ylabel("Voltage (V)", fontsize=FONT_SIZE)
         ax.grid(True, alpha=GRID_ALPHA)
-        add_caption(
-            ax, "The 'fingerprint' of the battery chemistry. The 'knee' shows usable energy limits."
-        )
 
         # (1,1) — Empty spacer
-        axes2[1, 1].axis("off")
+        ax_empty = fig2.add_subplot(gs[1, 1])
+        ax_empty.axis("off")
 
-        # (2,0) + (2,1) — Data Processing Notes (merged into single axes)
-        ax_notes = axes2[2, 0]
-        ax_notes2 = axes2[2, 1]
+        # (2, :) — Data Processing Notes (spans both columns)
+        ax_notes = fig2.add_subplot(gs[2, :])
         ax_notes.axis("off")
-        ax_notes2.axis("off")
 
         log_section = metadata.get("Data_Processing_Log", {})
         validation_notes = log_section.get("Validation", ["No validation notes"])
@@ -402,7 +386,6 @@ def generate_report(
 
         notes_text = "\n".join(notes_lines)
 
-        # Use the left bottom cell for the notes text box
         ax_notes.text(
             0.5,
             0.5,
@@ -412,10 +395,10 @@ def generate_report(
             va="center",
             fontsize=FONT_SIZE,
             family="monospace",
+            wrap=True,
             bbox=dict(boxstyle="round,pad=0.5", facecolor="whitesmoke", edgecolor="lightgray"),
         )
 
-        fig2.subplots_adjust(left=0.08, right=0.95, top=0.90, bottom=0.08, hspace=0.45, wspace=0.35)
         pdf.savefig(fig2)
         plt.close(fig2)
 
