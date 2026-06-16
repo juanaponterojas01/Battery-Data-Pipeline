@@ -137,6 +137,22 @@ def load_metadata(json_path: Path) -> dict:
         return json.load(f)
 
 
+def limit_ticks(ax: plt.Axes, axis: str = "x", max_ticks: int = 6) -> None:
+    """Limit the number of ticks on an axis to prevent label overcrowding.
+
+    Args:
+        ax: Matplotlib axes to modify.
+        axis: Which axis to limit (``"x"`` or ``"y"``).
+        max_ticks: Maximum number of ticks to display.
+    """
+    import matplotlib.ticker as mticker
+    locator = mticker.MaxNLocator(nbins=max_ticks, prune="both")
+    if axis == "x":
+        ax.xaxis.set_major_locator(locator)
+    else:
+        ax.yaxis.set_major_locator(locator)
+
+
 def get_status(metric_name: str, value: float) -> tuple[str, str]:
     """Return (status_text, color_hex) for a metric value.
 
@@ -297,6 +313,7 @@ def generate_report(
         ax.set_xlabel("Time (s)", fontsize=FONT_SIZE)
         ax.set_ylabel("Current (A)", fontsize=FONT_SIZE)
         ax.grid(True, alpha=GRID_ALPHA)
+        limit_ticks(ax, axis="x", max_ticks=6)
 
         # (1,1) — Voltage vs Time
         ax = axes1[1, 1]
@@ -305,6 +322,7 @@ def generate_report(
         ax.set_xlabel("Time (s)", fontsize=FONT_SIZE)
         ax.set_ylabel("Voltage (V)", fontsize=FONT_SIZE)
         ax.grid(True, alpha=GRID_ALPHA)
+        limit_ticks(ax, axis="x", max_ticks=6)
 
         # (2,0) — Empty spacer
         axes1[2, 0].axis("off")
@@ -339,6 +357,7 @@ def generate_report(
         ax.set_xlabel("Time (s)", fontsize=FONT_SIZE)
         ax.set_ylabel("SOC (%)", fontsize=FONT_SIZE)
         ax.grid(True, alpha=GRID_ALPHA)
+        limit_ticks(ax, axis="x", max_ticks=6)
 
         # (0,1) — Temperature vs Time
         ax = fig2.add_subplot(gs[0, 1])
@@ -347,6 +366,7 @@ def generate_report(
         ax.set_xlabel("Time (s)", fontsize=FONT_SIZE)
         ax.set_ylabel("Temperature (°C)", fontsize=FONT_SIZE)
         ax.grid(True, alpha=GRID_ALPHA)
+        limit_ticks(ax, axis="x", max_ticks=6)
 
         # (1,0) — Voltage vs SOC
         ax = fig2.add_subplot(gs[1, 0])
@@ -355,6 +375,7 @@ def generate_report(
         ax.set_xlabel("SOC (%)", fontsize=FONT_SIZE)
         ax.set_ylabel("Voltage (V)", fontsize=FONT_SIZE)
         ax.grid(True, alpha=GRID_ALPHA)
+        limit_ticks(ax, axis="x", max_ticks=6)
 
         # (1,1) — Empty spacer
         ax_empty = fig2.add_subplot(gs[1, 1])
@@ -370,12 +391,22 @@ def generate_report(
         soc_note = log_section.get("SOC_Method", "N/A")
         norm_note = log_section.get("Normalization", "N/A")
 
+        # Truncate validation notes if they are excessively long
+        max_notes = 5
+        max_note_len = 80
+        if len(validation_notes) > max_notes:
+            validation_notes = validation_notes[:max_notes] + [
+                f"... and {len(validation_notes) - max_notes} more"
+            ]
+
         notes_lines = [
             "Data Processing Notes",
             "",
             "Validation:",
         ]
         for note in validation_notes:
+            if len(note) > max_note_len:
+                note = note[:max_note_len] + "..."
             notes_lines.append(f"  • {note}")
         notes_lines.extend([
             "",
@@ -395,7 +426,6 @@ def generate_report(
             va="center",
             fontsize=FONT_SIZE,
             family="monospace",
-            wrap=True,
             bbox=dict(boxstyle="round,pad=0.5", facecolor="whitesmoke", edgecolor="lightgray"),
         )
 
