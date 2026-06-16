@@ -1,0 +1,25 @@
+# EV Battery Data Pipeline — Consolidated Requirements
+# Python 3.12+
+#
+# Install all dependencies for local development and testing:
+#   pip install -r requirements.txt
+#
+# Note: Lambda functions also have individual requirements.txt files
+# in src/<function>/ directories for AWS SAM builds.
+
+# AWS SDK (used by all Lambda functions and the generate-report skill)
+boto3==1.34.0
+
+# Data processing (used by validation, processing, soc_estimation, metadata, generate-report)
+pandas==2.1.4
+numpy==1.26.3
+
+# Signal processing (used by processing Lambda)
+scipy==1.11.4
+
+# Plotting (used by generate-report skill)
+matplotlib>=3.7.0
+
+# Testing
+pytest
+pytest-mock
