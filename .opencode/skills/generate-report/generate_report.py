@@ -393,7 +393,7 @@ def generate_report(
 
         # Truncate validation notes if they are excessively long
         max_notes = 5
-        max_note_len = 80
+        max_note_len = 45
         if len(validation_notes) > max_notes:
             validation_notes = validation_notes[:max_notes] + [
                 f"... and {len(validation_notes) - max_notes} more"
@@ -424,9 +424,9 @@ def generate_report(
             transform=ax_notes.transAxes,
             ha="center",
             va="center",
-            fontsize=FONT_SIZE,
+            fontsize=FONT_SIZE - 2,
             family="monospace",
-            bbox=dict(boxstyle="round,pad=0.5", facecolor="whitesmoke", edgecolor="lightgray"),
+            bbox=dict(boxstyle="round,pad=0.6", facecolor="whitesmoke", edgecolor="lightgray"),
         )
 
         pdf.savefig(fig2)
