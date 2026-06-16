@@ -1,16 +1,16 @@
-"""CLI tool for listing and plotting battery test datasets from S3.
+"""CLI tool for listing and generating PDF reports of battery test datasets from S3.
 
 This script provides two commands:
 
 - ``list``: Lists available processed datasets stored in the S3 ``results/`` prefix.
-- ``plot``: Downloads a dataset (CSV + metadata JSON) from S3 and generates
-  a 5-panel A4-optimized report figure saved as ``report.png``.
+- ``generate``: Downloads a dataset (CSV + metadata JSON) from S3 and generates
+  a professional 2-page A4 PDF report.
 
 Usage::
 
     python generate_report.py list
-    python generate_report.py plot US06_25degC_2017-03-20
-    python generate_report.py plot US06_25degC_2017-03-20 --force
+    python generate_report.py generate US06_25degC_2017-03-20
+    python generate_report.py generate US06_25degC_2017-03-20 --force
 """
 
 import json
@@ -23,6 +23,7 @@ import matplotlib
 import matplotlib.pyplot as plt
 import pandas as pd
 from botocore.exceptions import ClientError
+from matplotlib.backends.backend_pdf import PdfPages
 
 # ---------------------------------------------------------------------------
 # S3 Configuration
@@ -33,18 +34,32 @@ RESULTS_PREFIX = "results/"
 METADATA_PREFIX = "metadata/"
 
 # ---------------------------------------------------------------------------
-# Plot styling constants
+# Report styling constants
 # ---------------------------------------------------------------------------
 
-FIG_WIDTH_IN = 6.5
-FIG_HEIGHT_IN = 9.5
+A4_WIDTH_IN = 8.27
+A4_HEIGHT_IN = 11.69
 DPI = 300
 FONT_SIZE = 11
+TITLE_FONT_SIZE = 13
 LINE_WIDTH = 1.2
 GRID_ALPHA = 0.3
 COLOR_PALETTE = "tab10"
 
-REQUIRED_COLUMNS = {"V_norm", "I_norm", "T_norm", "SOC", "Time"}
+REQUIRED_COLUMNS = {
+    "Time",
+    "Voltage_Filtered",
+    "Current_Filtered",
+    "Temperature",
+    "SOC",
+}
+
+# ---------------------------------------------------------------------------
+# Status thresholds
+# ---------------------------------------------------------------------------
+
+PEAK_TEMP_THRESHOLD = 45.0  # °C
+VOLTAGE_SAG_THRESHOLD = 0.5  # V
 
 
 # ---------------------------------------------------------------------------
@@ -53,29 +68,12 @@ REQUIRED_COLUMNS = {"V_norm", "I_norm", "T_norm", "SOC", "Time"}
 
 
 def get_s3_client() -> boto3.client:
-    """Return a configured boto3 S3 client.
-
-    Returns:
-        A boto3 S3 client instance.
-    """
+    """Return a configured boto3 S3 client."""
     return boto3.client("s3")
 
 
 def list_datasets(s3_client: boto3.client) -> list[str]:
-    """List available dataset names from the S3 ``results/`` prefix.
-
-    Parses S3 object keys of the form ``results/<dataset_name>.csv`` and
-    extracts the dataset name portion.
-
-    Args:
-        s3_client: A boto3 S3 client.
-
-    Returns:
-        A sorted list of dataset name strings.
-
-    Raises:
-        SystemExit: If the S3 ``list_objects_v2`` call fails.
-    """
+    """List available dataset names from the S3 ``results/`` prefix."""
     try:
         response = s3_client.list_objects_v2(
             Bucket=PROCESSED_BUCKET, Prefix=RESULTS_PREFIX
@@ -88,7 +86,6 @@ def list_datasets(s3_client: boto3.client) -> list[str]:
     for obj in response.get("Contents", []):
         key = obj["Key"]
         if key.endswith(".csv"):
-            # Strip prefix and .csv extension
             name = key[len(RESULTS_PREFIX) : -len(".csv")]
             datasets.append(name)
 
@@ -98,20 +95,7 @@ def list_datasets(s3_client: boto3.client) -> list[str]:
 def download_files(
     s3_client: boto3.client, dataset_name: str, local_dir: Path
 ) -> None:
-    """Download the CSV and metadata JSON for a dataset from S3.
-
-    Downloads:
-        - ``results/<dataset_name>.csv`` → ``<local_dir>/<dataset_name>.csv``
-        - ``metadata/<dataset_name>.json`` → ``<local_dir>/<dataset_name>.json``
-
-    Args:
-        s3_client: A boto3 S3 client.
-        dataset_name: The dataset name (e.g. ``"US06_25degC_2017-03-20"``).
-        local_dir: The local directory to save files into.
-
-    Raises:
-        SystemExit: If any S3 download fails.
-    """
+    """Download the CSV and metadata JSON for a dataset from S3."""
     local_dir.mkdir(parents=True, exist_ok=True)
 
     csv_key = f"{RESULTS_PREFIX}{dataset_name}.csv"
@@ -133,17 +117,7 @@ def download_files(
 
 
 def load_and_validate_csv(csv_path: Path) -> pd.DataFrame:
-    """Load a CSV file and validate that required columns are present.
-
-    Args:
-        csv_path: Path to the CSV file.
-
-    Returns:
-        A pandas DataFrame with the validated data.
-
-    Raises:
-        SystemExit: If required columns are missing.
-    """
+    """Load a CSV file and validate that required columns are present."""
     df = pd.read_csv(csv_path)
 
     missing = REQUIRED_COLUMNS - set(df.columns)
@@ -158,173 +132,287 @@ def load_and_validate_csv(csv_path: Path) -> pd.DataFrame:
 
 
 def load_metadata(json_path: Path) -> dict:
-    """Load and return the metadata JSON file.
-
-    Args:
-        json_path: Path to the JSON metadata file.
-
-    Returns:
-        A dictionary with the metadata contents.
-    """
+    """Load and return the metadata JSON file."""
     with open(json_path, "r") as f:
         return json.load(f)
+
+
+def get_status(metric_name: str, value: float) -> tuple[str, str]:
+    """Return (status_text, color_hex) for a metric value.
+
+    Args:
+        metric_name: Name of the metric (e.g. ``"Peak_Temperature"``).
+        value: The metric value.
+
+    Returns:
+        A tuple of (status text, background color hex string).
+    """
+    if metric_name == "Peak_Temperature":
+        if value >= PEAK_TEMP_THRESHOLD:
+            return ("⚠️ Review", "#ffcccc")
+        return ("✅ Safe", "#ccffcc")
+
+    if metric_name == "Voltage_Sag":
+        if value >= VOLTAGE_SAG_THRESHOLD:
+            return ("⚠️ Review", "#ffcccc")
+        return ("✅ Normal", "#ccffcc")
+
+    return ("", "#ffffff")
+
+
+def draw_metrics_table(ax: plt.Axes, metadata: dict) -> None:
+    """Draw the Executive Metrics table on the given axes.
+
+    Args:
+        ax: Matplotlib axes to draw the table on.
+        metadata: Metadata dictionary containing ``Key_Performance_Metrics``.
+    """
+    ax.axis("off")
+    kpi = metadata.get("Key_Performance_Metrics", {})
+
+    metrics = [
+        ("Capacity Discharged", f"{kpi.get('Capacity_Discharged_Ah', 'N/A')} Ah"),
+        ("Energy Delivered", f"{kpi.get('Energy_Delivered_Wh', 'N/A')} Wh"),
+        ("Peak Discharge Current", f"{kpi.get('Peak_Discharge_Current_A', 'N/A')} A"),
+        ("Peak Regen Current", f"{kpi.get('Peak_Regen_Current_A', 'N/A')} A"),
+        ("Voltage Sag", f"{kpi.get('Voltage_Sag_V', 'N/A')} V"),
+        ("Peak Temperature", f"{kpi.get('Peak_Temperature', 'N/A')} °C"),
+        ("Delta Temperature", f"{kpi.get('Delta_Temperature_C', 'N/A')} °C"),
+        ("Average C-Rate", f"{kpi.get('Average_C_Rate', 'N/A')} C"),
+    ]
+
+    # Build cell colors based on status
+    cell_text = [[name, value] for name, value in metrics]
+    cell_colors = []
+    for name, _ in metrics:
+        if "Temperature" in name and "Peak" in name:
+            try:
+                val = float(kpi.get("Peak_Temperature", 0))
+                _, color = get_status("Peak_Temperature", val)
+            except (ValueError, TypeError):
+                color = "#ffffff"
+            cell_colors.append(["#f0f0f0", color])
+        elif "Voltage Sag" in name:
+            try:
+                val = float(kpi.get("Voltage_Sag_V", 0))
+                _, color = get_status("Voltage_Sag", val)
+            except (ValueError, TypeError):
+                color = "#ffffff"
+            cell_colors.append(["#f0f0f0", color])
+        else:
+            cell_colors.append(["#f0f0f0", "#ffffff"])
+
+    table = ax.table(
+        cellText=cell_text,
+        cellColours=cell_colors,
+        colWidths=[0.55, 0.45],
+        loc="center",
+        cellLoc="left",
+    )
+    table.auto_set_font_size(False)
+    table.set_fontsize(FONT_SIZE)
+    table.scale(1, 1.8)
+
+    for key, cell in table.get_celld().items():
+        cell.set_edgecolor("lightgray")
+        if key[1] == 0:
+            cell.set_text_props(fontweight="bold")
+
+    ax.set_title("Executive Metrics", fontsize=TITLE_FONT_SIZE, fontweight="bold", pad=10)
+
+
+def add_caption(ax: plt.Axes, text: str) -> None:
+    """Add a descriptive caption below an axes."""
+    ax.annotate(
+        text,
+        xy=(0.5, -0.18),
+        xycoords="axes fraction",
+        ha="center",
+        va="top",
+        fontsize=FONT_SIZE - 2,
+        style="italic",
+        color="dimgray",
+    )
 
 
 def generate_report(
     df: pd.DataFrame, metadata: dict, dataset_name: str, output_path: Path
 ) -> None:
-    """Generate a 5-panel A4-optimized report figure and save it as PNG.
-
-    The figure contains:
-        - Normalized Current vs Time
-        - Normalized Voltage vs Time
-        - State of Charge vs Time
-        - Normalized Temperature vs Time
-        - Normalized Voltage vs SOC
-        - A summary panel with key metadata values
+    """Generate a 2-page A4 PDF report and save it.
 
     Args:
         df: DataFrame containing the battery test data with columns
-            ``Time``, ``I_norm``, ``V_norm``, ``SOC``, ``T_norm``.
-        metadata: Dictionary with nested sections ``Test_Summary`` and
-            ``Key_Performance_Metrics`` containing fields such as
-            ``Cell_ID``, ``Drive_Cycle``, ``Test_Date``, ``Duration_Secs``,
-            ``Average_SOC``, ``Average_Voltage``, ``Peak_Temperature``,
-            ``Capacity_Discharged_Ah``.
-        dataset_name: The dataset name used for the figure title.
-        output_path: Path where the PNG figure will be saved.
+            ``Time``, ``Voltage_Filtered``, ``Current_Filtered``,
+            ``Temperature``, ``SOC``.
+        metadata: Dictionary with nested sections ``Test_Summary``,
+            ``Key_Performance_Metrics``, and ``Data_Processing_Log``.
+        dataset_name: The dataset name used for the report title.
+        output_path: Path where the PDF will be saved.
     """
     matplotlib.use("Agg")
     plt.rcParams.update({"font.size": FONT_SIZE})
 
-    fig, axes = plt.subplots(
-        3, 2, figsize=(FIG_WIDTH_IN, FIG_HEIGHT_IN), dpi=DPI
-    )
-
-    # Parse dataset_name for suptitle: "<Drive_Cycle> (<Test_Date>)"
-    # dataset_name format: e.g. "US06_25degC_2017-03-20"
+    color_cycle = plt.get_cmap(COLOR_PALETTE).colors
     test_summary = metadata.get("Test_Summary", {})
     drive_cycle = test_summary.get("Drive_Cycle", dataset_name.split("_")[0])
     test_date = test_summary.get("Test_Date", "")
-    fig.suptitle(
-        f"EV Battery Data Report: {drive_cycle} ({test_date})",
-        fontsize=FONT_SIZE + 2,
-        fontweight="bold",
-        y=0.98,
-    )
 
-    color_cycle = plt.get_cmap(COLOR_PALETTE).colors
+    with PdfPages(str(output_path)) as pdf:
+        # ==================================================================
+        # PAGE 1: Title, Summary, Metrics Table, Current, Voltage
+        # ==================================================================
+        fig1, axes1 = plt.subplots(3, 2, figsize=(A4_WIDTH_IN, A4_HEIGHT_IN), dpi=DPI)
+        fig1.suptitle(
+            f"Battery Drive Cycle Performance Report\n{drive_cycle} ({test_date})",
+            fontsize=TITLE_FONT_SIZE + 2,
+            fontweight="bold",
+            y=0.97,
+        )
 
-    # (0,0) Current vs Time
-    ax = axes[0, 0]
-    ax.plot(
-        df["Time"],
-        df["I_norm"],
-        color=color_cycle[0],
-        linewidth=LINE_WIDTH,
-    )
-    ax.set_title("Normalized Current vs Time", fontsize=FONT_SIZE)
-    ax.set_xlabel("Time (s)", fontsize=FONT_SIZE)
-    ax.set_ylabel("I_norm", fontsize=FONT_SIZE)
-    ax.grid(True, alpha=GRID_ALPHA)
+        # (0,0) — Test Summary
+        ax = axes1[0, 0]
+        ax.axis("off")
+        cell_id = test_summary.get("Cell_ID", "N/A")
+        duration = test_summary.get("Duration_Secs", "N/A")
+        try:
+            duration_str = f"{float(duration):.2f} s"
+        except (ValueError, TypeError):
+            duration_str = f"{duration} s"
 
-    # (0,1) Voltage vs Time
-    ax = axes[0, 1]
-    ax.plot(
-        df["Time"],
-        df["V_norm"],
-        color=color_cycle[1],
-        linewidth=LINE_WIDTH,
-    )
-    ax.set_title("Normalized Voltage vs Time", fontsize=FONT_SIZE)
-    ax.set_xlabel("Time (s)", fontsize=FONT_SIZE)
-    ax.set_ylabel("V_norm", fontsize=FONT_SIZE)
-    ax.grid(True, alpha=GRID_ALPHA)
+        summary_text = (
+            f"Cell Model: {cell_id}\n"
+            f"Drive Cycle: {drive_cycle}\n"
+            f"Test Date: {test_date}\n"
+            f"Duration: {duration_str}"
+        )
+        ax.text(
+            0.5,
+            0.5,
+            summary_text,
+            transform=ax.transAxes,
+            fontsize=FONT_SIZE,
+            verticalalignment="center",
+            horizontalalignment="center",
+            family="monospace",
+            bbox=dict(boxstyle="round,pad=0.5", facecolor="whitesmoke", edgecolor="lightgray"),
+        )
+        ax.set_title("Test Summary", fontsize=TITLE_FONT_SIZE, fontweight="bold", pad=10)
 
-    # (1,0) SOC vs Time
-    ax = axes[1, 0]
-    ax.plot(
-        df["Time"],
-        df["SOC"],
-        color=color_cycle[2],
-        linewidth=LINE_WIDTH,
-    )
-    ax.set_title("State of Charge vs Time", fontsize=FONT_SIZE)
-    ax.set_xlabel("Time (s)", fontsize=FONT_SIZE)
-    ax.set_ylabel("SOC", fontsize=FONT_SIZE)
-    ax.grid(True, alpha=GRID_ALPHA)
+        # (0,1) — Executive Metrics Table
+        draw_metrics_table(axes1[0, 1], metadata)
 
-    # (1,1) Temperature vs Time
-    ax = axes[1, 1]
-    ax.plot(
-        df["Time"],
-        df["T_norm"],
-        color=color_cycle[3],
-        linewidth=LINE_WIDTH,
-    )
-    ax.set_title("Normalized Temperature vs Time", fontsize=FONT_SIZE)
-    ax.set_xlabel("Time (s)", fontsize=FONT_SIZE)
-    ax.set_ylabel("T_norm", fontsize=FONT_SIZE)
-    ax.grid(True, alpha=GRID_ALPHA)
+        # (1,0) — Current vs Time
+        ax = axes1[1, 0]
+        ax.plot(df["Time"], df["Current_Filtered"], color=color_cycle[0], linewidth=LINE_WIDTH)
+        ax.set_title("1. Applied Load Profile", fontsize=TITLE_FONT_SIZE, fontweight="bold")
+        ax.set_xlabel("Time (s)", fontsize=FONT_SIZE)
+        ax.set_ylabel("Current (A)", fontsize=FONT_SIZE)
+        ax.grid(True, alpha=GRID_ALPHA)
+        add_caption(ax, "Shows the 'stress' applied to the battery during the drive cycle.")
 
-    # (2,0) Voltage vs SOC
-    ax = axes[2, 0]
-    ax.plot(
-        df["SOC"],
-        df["V_norm"],
-        color=color_cycle[4],
-        linewidth=LINE_WIDTH,
-    )
-    ax.set_title("Normalized Voltage vs SOC", fontsize=FONT_SIZE)
-    ax.set_xlabel("SOC", fontsize=FONT_SIZE)
-    ax.set_ylabel("V_norm", fontsize=FONT_SIZE)
-    ax.grid(True, alpha=GRID_ALPHA)
+        # (1,1) — Voltage vs Time
+        ax = axes1[1, 1]
+        ax.plot(df["Time"], df["Voltage_Filtered"], color=color_cycle[1], linewidth=LINE_WIDTH)
+        ax.set_title("2. Electrical Response", fontsize=TITLE_FONT_SIZE, fontweight="bold")
+        ax.set_xlabel("Time (s)", fontsize=FONT_SIZE)
+        ax.set_ylabel("Voltage (V)", fontsize=FONT_SIZE)
+        ax.grid(True, alpha=GRID_ALPHA)
+        add_caption(
+            ax, "The 'heartbeat' of the battery. Deep drops indicate high internal resistance."
+        )
 
-    # (2,1) Summary panel
-    ax = axes[2, 1]
-    ax.axis("off")
+        # (2,0) — Empty spacer
+        axes1[2, 0].axis("off")
 
-    test_summary = metadata.get("Test_Summary", {})
-    kpi = metadata.get("Key_Performance_Metrics", {})
+        # (2,1) — Empty spacer
+        axes1[2, 1].axis("off")
 
-    duration = test_summary.get('Duration_Secs', 'N/A')
-    try:
-        duration_str = f"{float(duration):.2f} s"
-    except (ValueError, TypeError):
-        duration_str = f"{duration} s"
+        fig1.tight_layout(rect=[0, 0, 1, 0.94])
+        pdf.savefig(fig1, bbox_inches="tight")
+        plt.close(fig1)
 
-    summary_lines = [
-        f"Cell: {test_summary.get('Cell_ID', 'N/A')}",
-        f"Drive Cycle: {test_summary.get('Drive_Cycle', 'N/A')}",
-        f"Date: {test_summary.get('Test_Date', 'N/A')}",
-        f"Duration: {duration_str}",
-        "",
-        f"Avg SOC: {kpi.get('Average_SOC', 'N/A')}",
-        f"Avg Voltage: {kpi.get('Average_Voltage', 'N/A')} V",
-        f"Peak Temp: {kpi.get('Peak_Temperature', 'N/A')} \u00b0C",
-        f"Cap. Discharged: {kpi.get('Capacity_Discharged_Ah', 'N/A')} Ah",
-    ]
-    summary_text = "\n".join(summary_lines)
+        # ==================================================================
+        # PAGE 2: SOC, Temperature, V-vs-SOC, Processing Notes
+        # ==================================================================
+        fig2, axes2 = plt.subplots(3, 2, figsize=(A4_WIDTH_IN, A4_HEIGHT_IN), dpi=DPI)
+        fig2.suptitle(
+            f"Battery Drive Cycle Performance Report (cont.)\n{drive_cycle} ({test_date})",
+            fontsize=TITLE_FONT_SIZE + 2,
+            fontweight="bold",
+            y=0.97,
+        )
 
-    ax.text(
-        0.5,
-        0.5,
-        summary_text,
-        transform=ax.transAxes,
-        fontsize=FONT_SIZE,
-        verticalalignment="center",
-        horizontalalignment="center",
-        family="monospace",
-        bbox=dict(
-            boxstyle="round,pad=0.5",
-            facecolor="whitesmoke",
-            edgecolor="lightgray",
-        ),
-    )
+        # (0,0) — SOC vs Time
+        ax = axes2[0, 0]
+        ax.plot(df["Time"], df["SOC"] * 100, color=color_cycle[2], linewidth=LINE_WIDTH)
+        ax.set_title("3. State of Charge Depletion", fontsize=TITLE_FONT_SIZE, fontweight="bold")
+        ax.set_xlabel("Time (s)", fontsize=FONT_SIZE)
+        ax.set_ylabel("SOC (%)", fontsize=FONT_SIZE)
+        ax.grid(True, alpha=GRID_ALPHA)
+        add_caption(ax, "Rate of energy depletion — crucial for BMS algorithm validation.")
 
-    fig.tight_layout(rect=[0, 0, 1, 0.96])
-    fig.savefig(str(output_path), bbox_inches="tight")
-    plt.close(fig)
+        # (0,1) — Temperature vs Time
+        ax = axes2[0, 1]
+        ax.plot(df["Time"], df["Temperature"], color=color_cycle[3], linewidth=LINE_WIDTH)
+        ax.set_title("4. Thermal Response", fontsize=TITLE_FONT_SIZE, fontweight="bold")
+        ax.set_xlabel("Time (s)", fontsize=FONT_SIZE)
+        ax.set_ylabel("Temperature (°C)", fontsize=FONT_SIZE)
+        ax.grid(True, alpha=GRID_ALPHA)
+        add_caption(ax, "Heat generation dictates EV cooling system requirements.")
+
+        # (1,0) — Voltage vs SOC
+        ax = axes2[1, 0]
+        ax.plot(df["SOC"] * 100, df["Voltage_Filtered"], color=color_cycle[4], linewidth=LINE_WIDTH)
+        ax.set_title("5. Characteristic Curve", fontsize=TITLE_FONT_SIZE, fontweight="bold")
+        ax.set_xlabel("SOC (%)", fontsize=FONT_SIZE)
+        ax.set_ylabel("Voltage (V)", fontsize=FONT_SIZE)
+        ax.grid(True, alpha=GRID_ALPHA)
+        add_caption(
+            ax, "The 'fingerprint' of the battery chemistry. The 'knee' shows usable energy limits."
+        )
+
+        # (1,1) — Empty spacer
+        axes2[1, 1].axis("off")
+
+        # (2,0) + (2,1) — Data Processing Notes (merged)
+        axes2[2, 0].axis("off")
+        axes2[2, 1].axis("off")
+
+        log_section = metadata.get("Data_Processing_Log", {})
+        validation_notes = log_section.get("Validation", ["No validation notes"])
+        filter_note = log_section.get("Filter", "N/A")
+        soc_note = log_section.get("SOC_Method", "N/A")
+        norm_note = log_section.get("Normalization", "N/A")
+
+        notes_lines = [
+            "Data Processing Notes",
+            "",
+            "Validation:",
+        ]
+        for note in validation_notes:
+            notes_lines.append(f"  • {note}")
+        notes_lines.extend([
+            "",
+            f"Filtering: {filter_note}",
+            f"Normalization: {norm_note}",
+            f"SOC Method: {soc_note}",
+        ])
+
+        notes_text = "\n".join(notes_lines)
+        fig2.text(
+            0.5,
+            0.18,
+            notes_text,
+            ha="center",
+            va="center",
+            fontsize=FONT_SIZE,
+            family="monospace",
+            bbox=dict(boxstyle="round,pad=0.5", facecolor="whitesmoke", edgecolor="lightgray"),
+        )
+
+        fig2.tight_layout(rect=[0, 0, 1, 0.94])
+        pdf.savefig(fig2, bbox_inches="tight")
+        plt.close(fig2)
 
 
 # ---------------------------------------------------------------------------
@@ -333,28 +421,22 @@ def generate_report(
 
 
 def build_parser() -> argparse.ArgumentParser:
-    """Build and return the argument parser for the CLI.
-
-    Returns:
-        A configured ``ArgumentParser`` instance.
-    """
+    """Build and return the argument parser for the CLI."""
     parser = argparse.ArgumentParser(
-        description="Battery data report generator — list and plot datasets from S3."
+        description="Battery data report generator — list and generate PDF reports from S3."
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    # list command
     subparsers.add_parser("list", help="List available datasets from S3")
 
-    # plot command
-    plot_parser = subparsers.add_parser(
-        "plot", help="Download and generate plots for a dataset"
+    gen_parser = subparsers.add_parser(
+        "generate", help="Download and generate a PDF report for a dataset"
     )
-    plot_parser.add_argument(
+    gen_parser.add_argument(
         "dataset_name",
-        help="Name of the dataset to plot (e.g. US06_25degC_2017-03-20)",
+        help="Name of the dataset to report on (e.g. US06_25degC_2017-03-20)",
     )
-    plot_parser.add_argument(
+    gen_parser.add_argument(
         "--force",
         action="store_true",
         help="Re-download files from S3 even if cached locally",
@@ -364,11 +446,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def cmd_list(s3_client: boto3.client) -> None:
-    """Handle the ``list`` subcommand.
-
-    Args:
-        s3_client: A boto3 S3 client.
-    """
+    """Handle the ``list`` subcommand."""
     datasets = list_datasets(s3_client)
     if not datasets:
         print("No datasets found in S3.")
@@ -379,18 +457,8 @@ def cmd_list(s3_client: boto3.client) -> None:
         print(f"  {i}. {name}")
 
 
-def cmd_plot(s3_client: boto3.client, dataset_name: str, force: bool) -> None:
-    """Handle the ``plot`` subcommand.
-
-    Args:
-        s3_client: A boto3 S3 client.
-        dataset_name: The dataset name to plot.
-        force: If True, re-download files even if cached.
-
-    Raises:
-        SystemExit: If the dataset is not found or any operation fails.
-    """
-    # Verify dataset exists in S3
+def cmd_generate(s3_client: boto3.client, dataset_name: str, force: bool) -> None:
+    """Handle the ``generate`` subcommand."""
     datasets = list_datasets(s3_client)
     if dataset_name not in datasets:
         print(
@@ -407,20 +475,17 @@ def cmd_plot(s3_client: boto3.client, dataset_name: str, force: bool) -> None:
     csv_path = local_dir / f"{dataset_name}.csv"
     json_path = local_dir / f"{dataset_name}.json"
 
-    # Check cache
     if csv_path.exists() and json_path.exists() and not force:
         print("Using cached files.")
     else:
         print(f"Downloading {dataset_name} from S3...")
         download_files(s3_client, dataset_name, local_dir)
 
-    # Load and validate
     print("Loading data...")
     df = load_and_validate_csv(csv_path)
     metadata = load_metadata(json_path)
 
-    # Generate report
-    output_path = local_dir / "report.png"
+    output_path = local_dir / "report.pdf"
     print("Generating report...")
     generate_report(df, metadata, dataset_name, output_path)
 
@@ -436,8 +501,8 @@ def main() -> None:
 
     if args.command == "list":
         cmd_list(s3_client)
-    elif args.command == "plot":
-        cmd_plot(s3_client, args.dataset_name, args.force)
+    elif args.command == "generate":
+        cmd_generate(s3_client, args.dataset_name, args.force)
 
 
 if __name__ == "__main__":

@@ -105,13 +105,34 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         (df["SOC"].iloc[0] - df["SOC"].iloc[-1]) * Q_CAPACITY_AH
     )
 
+    # Additional metrics for the report
+    energy_delivered: float = capacity_discharged * avg_voltage
+    peak_discharge_current: float = float(df["Current_Filtered"].max())
+    peak_regen_current: float = abs(float(df["Current_Filtered"].min()))
+    voltage_sag: float = float(
+        df["Voltage_Filtered"].iloc[0] - df["Voltage_Filtered"].min()
+    )
+    min_voltage: float = float(df["Voltage_Filtered"].min())
+    starting_temp: float = float(df["Temperature"].iloc[0])
+    delta_temp: float = peak_temp - starting_temp
+    avg_c_rate: float = float(df["Current_Filtered"].abs().mean() / Q_CAPACITY_AH)
+
     logger.info(
         "Metrics — avg_soc=%.4f, avg_voltage=%.4f, peak_temp=%.2f, "
-        "capacity_discharged=%.4f Ah",
+        "capacity_discharged=%.4f Ah, energy=%.4f Wh, "
+        "I_peak=%.2f A, I_regen=%.2f A, dV=%.4f V, "
+        "T_start=%.2f C, dT=%.2f C, C_rate=%.4f",
         avg_soc,
         avg_voltage,
         peak_temp,
         capacity_discharged,
+        energy_delivered,
+        peak_discharge_current,
+        peak_regen_current,
+        voltage_sag,
+        starting_temp,
+        delta_temp,
+        avg_c_rate,
     )
 
     # ------------------------------------------------------------------
@@ -129,6 +150,14 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             "Average_Voltage": round(avg_voltage, 4),
             "Peak_Temperature": round(peak_temp, 2),
             "Capacity_Discharged_Ah": round(capacity_discharged, 4),
+            "Energy_Delivered_Wh": round(energy_delivered, 4),
+            "Peak_Discharge_Current_A": round(peak_discharge_current, 2),
+            "Peak_Regen_Current_A": round(peak_regen_current, 2),
+            "Voltage_Sag_V": round(voltage_sag, 4),
+            "Minimum_Voltage_V": round(min_voltage, 4),
+            "Starting_Temperature_C": round(starting_temp, 2),
+            "Delta_Temperature_C": round(delta_temp, 2),
+            "Average_C_Rate": round(avg_c_rate, 4),
         },
         "Data_Processing_Log": {
             "Validation": validation_log,
