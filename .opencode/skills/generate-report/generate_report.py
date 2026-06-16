@@ -225,7 +225,7 @@ def add_caption(ax: plt.Axes, text: str) -> None:
     """Add a descriptive caption below an axes."""
     ax.annotate(
         text,
-        xy=(0.5, -0.18),
+        xy=(0.5, -0.14),
         xycoords="axes fraction",
         ha="center",
         va="top",
@@ -327,8 +327,8 @@ def generate_report(
         # (2,1) — Empty spacer
         axes1[2, 1].axis("off")
 
-        fig1.tight_layout(rect=[0, 0, 1, 0.94])
-        pdf.savefig(fig1, bbox_inches="tight")
+        fig1.subplots_adjust(left=0.08, right=0.95, top=0.90, bottom=0.08, hspace=0.45, wspace=0.35)
+        pdf.savefig(fig1)
         plt.close(fig1)
 
         # ==================================================================
@@ -374,9 +374,11 @@ def generate_report(
         # (1,1) — Empty spacer
         axes2[1, 1].axis("off")
 
-        # (2,0) + (2,1) — Data Processing Notes (merged)
-        axes2[2, 0].axis("off")
-        axes2[2, 1].axis("off")
+        # (2,0) + (2,1) — Data Processing Notes (merged into single axes)
+        ax_notes = axes2[2, 0]
+        ax_notes2 = axes2[2, 1]
+        ax_notes.axis("off")
+        ax_notes2.axis("off")
 
         log_section = metadata.get("Data_Processing_Log", {})
         validation_notes = log_section.get("Validation", ["No validation notes"])
@@ -399,10 +401,13 @@ def generate_report(
         ])
 
         notes_text = "\n".join(notes_lines)
-        fig2.text(
+
+        # Use the left bottom cell for the notes text box
+        ax_notes.text(
             0.5,
-            0.18,
+            0.5,
             notes_text,
+            transform=ax_notes.transAxes,
             ha="center",
             va="center",
             fontsize=FONT_SIZE,
@@ -410,8 +415,8 @@ def generate_report(
             bbox=dict(boxstyle="round,pad=0.5", facecolor="whitesmoke", edgecolor="lightgray"),
         )
 
-        fig2.tight_layout(rect=[0, 0, 1, 0.94])
-        pdf.savefig(fig2, bbox_inches="tight")
+        fig2.subplots_adjust(left=0.08, right=0.95, top=0.90, bottom=0.08, hspace=0.45, wspace=0.35)
+        pdf.savefig(fig2)
         plt.close(fig2)
 
 
