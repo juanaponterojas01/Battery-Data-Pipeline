@@ -221,7 +221,7 @@ def draw_metrics_table(ax: plt.Axes, metadata: dict) -> None:
     table = ax.table(
         cellText=cell_text,
         cellColours=cell_colors,
-        colWidths=[0.60, 0.40],
+        colWidths=[0.80, 0.40],
         loc="center",
         cellLoc="left",
     )
