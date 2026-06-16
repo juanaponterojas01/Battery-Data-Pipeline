@@ -22,9 +22,12 @@ import os
 import shutil
 import sys
 import traceback
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
+
+import pandas as pd
 
 # ---------------------------------------------------------------------------
 # Add the src/ directory to the import path so Lambda handlers can be imported
@@ -64,22 +67,8 @@ class MockS3:
     def __init__(self, base_dir: Path) -> None:
         self.base_dir = base_dir.resolve()
 
-    # -- get_object -----------------------------------------------------------
-
     def get_object(self, *, Bucket: str, Key: str, **kwargs: Any) -> dict[str, Any]:
-        """Read a file from the local filesystem mimicking S3 ``GetObject``.
-
-        Args:
-            Bucket: S3 bucket name (mapped to a subdirectory).
-            Key: S3 object key (mapped to a file path within the bucket dir).
-
-        Returns:
-            A dict with a ``Body`` key whose value is a file-like object
-            (``io.BytesIO``) containing the file contents.
-
-        Raises:
-            FileNotFoundError: If the mapped local file does not exist.
-        """
+        """Read a file from the local filesystem mimicking S3 ``GetObject``."""
         file_path = self.base_dir / Bucket / Key
         if not file_path.exists():
             raise FileNotFoundError(
@@ -87,8 +76,6 @@ class MockS3:
                 f"(Bucket={Bucket!r}, Key={Key!r})"
             )
         return {"Body": io.BytesIO(file_path.read_bytes())}
-
-    # -- put_object -----------------------------------------------------------
 
     def put_object(
         self,
@@ -98,16 +85,7 @@ class MockS3:
         Body: bytes | str,
         **kwargs: Any,
     ) -> dict[str, Any]:
-        """Write data to the local filesystem mimicking S3 ``PutObject``.
-
-        Args:
-            Bucket: S3 bucket name (mapped to a subdirectory).
-            Key: S3 object key (mapped to a file path within the bucket dir).
-            Body: The content to write. Accepts ``bytes`` or ``str``.
-
-        Returns:
-            An empty dict (mimicking the minimal S3 response).
-        """
+        """Write data to the local filesystem mimicking S3 ``PutObject``."""
         file_path = self.base_dir / Bucket / Key
         file_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -153,11 +131,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def _setup_output_dir(output_dir: Path) -> None:
-    """Create the output directory tree, cleaning it if it already exists.
-
-    Args:
-        output_dir: Root output directory.
-    """
+    """Create the output directory tree, cleaning it if it already exists."""
     if output_dir.exists():
         shutil.rmtree(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -234,8 +208,8 @@ def _save_dataframe_from_s3(
     """Read a CSV stored by the mock S3 and save a human-readable copy.
 
     After each Lambda writes its output via ``put_object``, this helper
-    reads it back (using pandas for a clean CSV round-trip) and saves a
-    copy under ``output_dir/intermediate/`` for easy inspection.
+    reads it back and saves a copy under ``output_dir/intermediate/``
+    for easy inspection.
 
     Args:
         mock_s3: The active MockS3 instance.
@@ -247,8 +221,6 @@ def _save_dataframe_from_s3(
     Returns:
         Path to the saved intermediate CSV.
     """
-    import pandas as pd
-
     intermediate_dir = output_dir / "intermediate"
     intermediate_dir.mkdir(parents=True, exist_ok=True)
 
@@ -258,6 +230,35 @@ def _save_dataframe_from_s3(
     out_path = intermediate_dir / f"{label}.csv"
     df.to_csv(out_path, index=False)
     return out_path
+
+
+def _execute_step(
+    handler: Callable[[dict[str, Any], Any], dict[str, Any]],
+    event: dict[str, Any],
+    mock_s3_factory: Callable[..., Any],
+    step_label: str,
+) -> dict[str, Any]:
+    """Execute a Lambda handler with ``boto3.client`` patched to MockS3.
+
+    Args:
+        handler: The Lambda handler function to invoke.
+        event: The event payload.
+        mock_s3_factory: Callable that returns the MockS3 instance.
+        step_label: Human-readable name for error messages.
+
+    Returns:
+        The handler's return dict.
+
+    Raises:
+        RuntimeError: If the handler raises an exception.
+    """
+    try:
+        with patch("boto3.client", mock_s3_factory):
+            return handler(event, None)
+    except Exception:
+        print(f"\n[ERROR] {step_label} step failed!")
+        traceback.print_exc()
+        raise
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -287,9 +288,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"  Output dir: {output_dir}")
     print("=" * 60)
 
-    # ------------------------------------------------------------------
     # Pre-flight: load metadata, prepare output directory, seed raw CSV
-    # ------------------------------------------------------------------
     try:
         meta = _load_meta(args.meta)
     except (FileNotFoundError, ValueError, json.JSONDecodeError) as exc:
@@ -297,7 +296,6 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     _setup_output_dir(output_dir)
-
     mock_s3 = MockS3(output_dir)
 
     try:
@@ -306,10 +304,9 @@ def main(argv: list[str] | None = None) -> int:
         print(f"\n[ERROR] {exc}")
         return 1
 
-    # ------------------------------------------------------------------
-    # Patch boto3.client so every Lambda gets our MockS3
-    # ------------------------------------------------------------------
-    mock_s3_client = lambda *args, **kwargs: mock_s3
+    # Factory function that returns the MockS3 instance for boto3 patching
+    def _mock_s3_factory(*args: Any, **kwargs: Any) -> MockS3:
+        return mock_s3
 
     # ------------------------------------------------------------------
     # Step 1: Validation
@@ -323,9 +320,9 @@ def main(argv: list[str] | None = None) -> int:
             "test_date": meta["test_date"],
             "drive_cycle": meta["drive_cycle"],
         }
-
-        with patch("boto3.client", mock_s3_client):
-            validation_result = validate(validation_event, None)
+        validation_result = _execute_step(
+            validate, validation_event, _mock_s3_factory, "Validation"
+        )
 
         validated_key = validation_result["key"]
         _save_dataframe_from_s3(
@@ -334,8 +331,6 @@ def main(argv: list[str] | None = None) -> int:
         print(f"  -> Validated CSV key : {validated_key}")
         print(f"  -> Validation log    : {validation_result['validation_log']}")
     except Exception:
-        print("\n[ERROR] Validation step failed!")
-        traceback.print_exc()
         return 1
 
     # ------------------------------------------------------------------
@@ -351,9 +346,9 @@ def main(argv: list[str] | None = None) -> int:
             "test_date": meta["test_date"],
             "drive_cycle": meta["drive_cycle"],
         }
-
-        with patch("boto3.client", mock_s3_client):
-            processing_result = process(processing_event, None)
+        processing_result = _execute_step(
+            process, processing_event, _mock_s3_factory, "Processing"
+        )
 
         processed_key = processing_result["key"]
         _save_dataframe_from_s3(
@@ -361,8 +356,6 @@ def main(argv: list[str] | None = None) -> int:
         )
         print(f"  -> Processed CSV key : {processed_key}")
     except Exception:
-        print("\n[ERROR] Processing step failed!")
-        traceback.print_exc()
         return 1
 
     # ------------------------------------------------------------------
@@ -378,19 +371,15 @@ def main(argv: list[str] | None = None) -> int:
             "test_date": meta["test_date"],
             "drive_cycle": meta["drive_cycle"],
         }
-
-        with patch("boto3.client", mock_s3_client):
-            soc_result = estimate_soc(soc_event, None)
+        soc_result = _execute_step(
+            estimate_soc, soc_event, _mock_s3_factory, "SOC Estimation"
+        )
 
         soc_key = soc_result["key"]
-        _save_dataframe_from_s3(
-            mock_s3, _SOURCE_BUCKET, soc_key, output_dir, "soc"
-        )
+        _save_dataframe_from_s3(mock_s3, _SOURCE_BUCKET, soc_key, output_dir, "soc")
         print(f"  -> SOC CSV key       : {soc_key}")
         print(f"  -> Duration (secs)   : {soc_result['duration_secs']:.2f}")
     except Exception:
-        print("\n[ERROR] SOC Estimation step failed!")
-        traceback.print_exc()
         return 1
 
     # ------------------------------------------------------------------
@@ -410,15 +399,13 @@ def main(argv: list[str] | None = None) -> int:
             "drive_cycle": meta["drive_cycle"],
             "duration_secs": soc_result["duration_secs"],
         }
-
-        with patch("boto3.client", mock_s3_client):
-            metadata_result = generate_metadata(metadata_event, None)
+        metadata_result = _execute_step(
+            generate_metadata, metadata_event, _mock_s3_factory, "Metadata"
+        )
 
         print(f"  -> CSV output  : {metadata_result['csv_output']}")
         print(f"  -> JSON output : {metadata_result['json_output']}")
     except Exception:
-        print("\n[ERROR] Metadata step failed!")
-        traceback.print_exc()
         return 1
 
     # ------------------------------------------------------------------

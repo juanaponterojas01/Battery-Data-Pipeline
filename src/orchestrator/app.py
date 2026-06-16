@@ -11,6 +11,7 @@ import os
 import re
 import time
 import urllib.parse
+from typing import Any
 
 import boto3
 
@@ -26,7 +27,33 @@ def _sanitize(value: str) -> str:
     return re.sub(r"[^a-zA-Z0-9]", "-", value)
 
 
-def lambda_handler(event: dict, context: object) -> dict:
+def _read_meta_json(bucket: str, meta_key: str) -> dict[str, str]:
+    """Read and parse a ``.meta.json`` sidecar file from S3.
+
+    Args:
+        bucket: S3 bucket name.
+        meta_key: S3 object key for the metadata JSON file.
+
+    Returns:
+        Parsed metadata dict with ``cell_id``, ``test_date``, and
+        ``drive_cycle`` keys.
+
+    Raises:
+        ValueError: If the metadata sidecar file is not found in S3.
+    """
+    try:
+        response = s3_client.get_object(Bucket=bucket, Key=meta_key)
+        meta_body = response["Body"].read()
+    except s3_client.exceptions.NoSuchKey:
+        raise ValueError(
+            f"Metadata sidecar file not found: s3://{bucket}/{meta_key}"
+        )
+
+    metadata: dict[str, str] = json.loads(meta_body)
+    return metadata
+
+
+def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     """Handle S3 EventBridge events and start the Step Functions state machine.
 
     Args:
@@ -50,32 +77,20 @@ def lambda_handler(event: dict, context: object) -> dict:
 
     # 2. Validate that the key is a CSV file under raw/
     if not key.startswith("raw/") or not key.endswith(".csv"):
-        logger.info(
-            "Skipping non-CSV or non-raw file: s3://%s/%s", bucket, key
-        )
+        logger.info("Skipping non-CSV or non-raw file: s3://%s/%s", bucket, key)
         return {
             "status": "SKIPPED",
             "reason": "Not a CSV file in raw/ prefix",
         }
 
-    # 3. Construct the .meta.json sidecar key
+    # 3. Construct and read the .meta.json sidecar key
     meta_key = key.removesuffix(".csv") + ".meta.json"
     logger.info("Looking for metadata sidecar: s3://%s/%s", bucket, meta_key)
 
-    # 4. Read the .meta.json file from S3
-    try:
-        response = s3_client.get_object(Bucket=bucket, Key=meta_key)
-        meta_body = response["Body"].read()
-    except s3_client.exceptions.NoSuchKey:
-        raise ValueError(
-            f"Metadata sidecar file not found: s3://{bucket}/{meta_key}"
-        )
-
-    # 5. Parse the JSON metadata
-    metadata = json.loads(meta_body)
-    cell_id: str = metadata["cell_id"]
-    test_date: str = metadata["test_date"]
-    drive_cycle: str = metadata["drive_cycle"]
+    metadata = _read_meta_json(bucket, meta_key)
+    cell_id = metadata["cell_id"]
+    test_date = metadata["test_date"]
+    drive_cycle = metadata["drive_cycle"]
 
     logger.info(
         "Metadata parsed: cell_id=%s, test_date=%s, drive_cycle=%s",
@@ -84,12 +99,10 @@ def lambda_handler(event: dict, context: object) -> dict:
         drive_cycle,
     )
 
-    # 6. Start the Step Functions execution
+    # 4. Start the Step Functions execution
     state_machine_arn = os.environ.get("STATE_MACHINE_ARN")
     if not state_machine_arn:
-        raise ValueError(
-            "STATE_MACHINE_ARN environment variable is not set"
-        )
+        raise ValueError("STATE_MACHINE_ARN environment variable is not set")
 
     execution_name = f"{_sanitize(drive_cycle)}_{_sanitize(test_date)}_{int(time.time())}"
 
@@ -117,7 +130,7 @@ def lambda_handler(event: dict, context: object) -> dict:
         response["startDate"],
     )
 
-    # 7. Return success response
+    # 5. Return success response
     return {
         "status": "SUCCESS",
         "executionArn": response["executionArn"],
