@@ -68,6 +68,9 @@ ev-battery-pipeline/
 │   ├── processing/app.py             # Filtering & normalization
 │   ├── soc_estimation/app.py         # Coulomb counting SOC
 │   └── metadata/app.py               # Metrics & report generation
+├── examples/
+│   ├── raw_data/                     # Sample raw CSV + .meta.json sidecar
+│   └── processed_data/               # Sample processed CSV, metadata JSON, and PDF report
 ├── scripts/
 │   └── local_simulator.py            # Offline testing without AWS
 ├── statemachine/
@@ -75,6 +78,16 @@ ev-battery-pipeline/
 ├── template.yaml                     # SAM infrastructure as code
 └── samconfig.toml                    # SAM deployment configuration
 ```
+
+### Example Data
+
+The `examples/` directory contains a complete sample dataset so you can see the expected input and output formats without running the pipeline:
+
+- **`examples/raw_data/`** — A raw battery test CSV (`raw_data.csv`) and its `.meta.json` sidecar. This is exactly what you would upload to the raw S3 bucket to trigger the pipeline.
+- **`examples/processed_data/`** — The corresponding outputs after running through all four pipeline stages:
+  - `processed_results.csv` — Filtered, normalized data with SOC column appended
+  - `processed_results.json` — Structured metadata with test summary, key performance metrics, and data processing log
+  - `report.pdf` — Professional 2-page A4 PDF report with plots and executive metrics
 
 ---
 
