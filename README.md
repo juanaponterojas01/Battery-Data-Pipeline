@@ -144,6 +144,57 @@ Follow the prompts:
 
 After deployment, SAM outputs the names of the raw and processed S3 buckets.
 
+### Cost Considerations
+
+Each pipeline stage is a separate Lambda invocation with S3 as the intermediate data store. For typical drive-cycle datasets (tens of thousands of rows) this is perfectly fine, but keep the following in mind if you scale up:
+
+- **S3 requests** — Every stage performs at least one `GetObject` and one `PutObject`. Four stages = ~8 S3 requests per dataset. At scale, request charges can add up.
+- **Lambda cold starts** — Step Functions invokes each Lambda sequentially. Cold-start latency (typically 100–500 ms for Python 3.12) is incurred for the first invocation after idle time. If you process many files in bursts, consider provisioned concurrency for the processing and SOC estimation functions.
+- **Step Functions transitions** — Each state transition is billed. For this 4-stage pipeline the cost is negligible, but adding more stages or looping back for re-processing will increase it.
+
+For large-scale production workloads (millions of files or GB-sized CSVs), consider:
+- Batching multiple files per Lambda invocation
+- Using Amazon EFS for intermediate storage instead of S3 round-trips
+- Moving to a containerized ECS/Fargate job for very large files
+
+---
+
+## How to Customize the Stack
+
+The two files that control the AWS infrastructure are `template.yaml` and `samconfig.toml`.
+
+### `template.yaml` (SAM Infrastructure)
+
+This is the **source of truth** for all AWS resources. Key sections you might want to tweak:
+
+| Section | What to change |
+|---------|---------------|
+| `Globals.Function.MemorySize` / `Timeout` | Increase memory (up to 10,240 MB) or timeout (up to 900s) if you process very large CSVs. |
+| `FILTER_WINDOW` / `FILTER_POLYORDER` in `src/processing/app.py` | Adjust the Savitzky-Golay smoothing parameters (not in `template.yaml`, but affects behavior). |
+| `BatteryRawBucket` / `BatteryProcessedBucket` | Add lifecycle rules, cross-region replication, or logging prefixes. |
+| `PipelineStateMachine` | Modify `statemachine/pipeline.asl.json` to add parallel branches, error retries, or catch blocks. |
+
+After editing `template.yaml` (or the state machine JSON), redeploy with:
+
+```bash
+sam build --use-container
+sam deploy
+```
+
+### `samconfig.toml` (Deployment Config)
+
+This file stores the answers you gave during `sam deploy --guided` so you don't have to re-enter them:
+
+```toml
+version = 0.1
+[default.deploy.parameters]
+stack_name = "battery-data-pipeline"
+region = "us-east-1"
+confirm_changeset = true
+```
+
+You can edit this file to change the target region, stack name, or disable interactive prompts for CI/CD pipelines.
+
 ---
 
 ## Usage
@@ -202,6 +253,19 @@ s3://battery-processed/metadata/<drive_cycle>_<test_date>.json
 - **`results/`** — Contains the processed CSV with filtered, normalized data and SOC column appended.
 - **`metadata/`** — Contains a JSON summary with average SOC, average voltage, peak temperature, and total capacity discharged.
 
+### Report Generation (OpenCode Skill)
+
+This repository includes a custom **OpenCode skill** (`.opencode/skills/generate-report/`) that automatically lists available datasets from S3 and generates professional 2-page A4 PDF reports with executive metrics, time-series plots, and data processing notes.
+
+The skill is designed to be **portable** — the underlying Python script can be invoked from any coding agent or CLI tool, including Claude Code, GitHub Copilot, Cursor, or a plain terminal:
+
+```bash
+python .opencode/skills/generate-report/generate_report.py list
+python .opencode/skills/generate-report/generate_report.py generate <dataset_name>
+```
+
+Because the report generator is a standalone script with no OpenCode-specific dependencies, you can drop it into any workflow where you need quick, repeatable battery test visualizations.
+
 ---
 
 ## Data Processing Details
@@ -227,6 +291,8 @@ s3://battery-processed/metadata/<drive_cycle>_<test_date>.json
   `SOC₀ = 1.0 - (cumulative_Ah_first / total_capacity_Ah)`
 - Each subsequent timestep integrates current over time:  
   `SOC(t) = SOC₀ - (∫ I dt) / total_capacity_Ah`
+
+> **Limitation:** Coulomb counting drifts over time because it accumulates sensor error. It also assumes the current sensor is perfectly calibrated and that the cell's total capacity (`Q_CAPACITY_AH = 2.9`) is constant across temperature and aging. For research-grade SOC estimation, consider fusing this with an open-circuit-voltage (OCV) lookup or a Kalman filter.
 
 ### Metadata (`metadata/app.py`)
 
