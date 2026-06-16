@@ -221,7 +221,7 @@ def draw_metrics_table(ax: plt.Axes, metadata: dict) -> None:
     table = ax.table(
         cellText=cell_text,
         cellColours=cell_colors,
-        colWidths=[0.55, 0.45],
+        colWidths=[0.60, 0.40],
         loc="center",
         cellLoc="left",
     )
@@ -386,34 +386,17 @@ def generate_report(
         ax_notes.axis("off")
 
         log_section = metadata.get("Data_Processing_Log", {})
-        validation_notes = log_section.get("Validation", ["No validation notes"])
         filter_note = log_section.get("Filter", "N/A")
         soc_note = log_section.get("SOC_Method", "N/A")
         norm_note = log_section.get("Normalization", "N/A")
 
-        # Truncate validation notes if they are excessively long
-        max_notes = 5
-        max_note_len = 45
-        if len(validation_notes) > max_notes:
-            validation_notes = validation_notes[:max_notes] + [
-                f"... and {len(validation_notes) - max_notes} more"
-            ]
-
         notes_lines = [
             "Data Processing Notes",
-            "",
-            "Validation:",
-        ]
-        for note in validation_notes:
-            if len(note) > max_note_len:
-                note = note[:max_note_len] + "..."
-            notes_lines.append(f"  • {note}")
-        notes_lines.extend([
             "",
             f"Filtering: {filter_note}",
             f"Normalization: {norm_note}",
             f"SOC Method: {soc_note}",
-        ])
+        ]
 
         notes_text = "\n".join(notes_lines)
 
